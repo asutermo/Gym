@@ -47,6 +47,7 @@ except ModuleNotFoundError as exc:
 
 from responses_api_agents.mini_swe_agent_2 import app as mini_swe_app_module
 from responses_api_agents.mini_swe_agent_2.app import (
+    DAYTONA_API_KEY_ENV,
     OPENSANDBOX_API_KEY_ENV,
     MiniSWEAgent,
     MiniSWEAgentConfig,
@@ -345,21 +346,31 @@ class TestApp:
         )
         assert _sandbox_spec_for_instance(None, resource_profiles=None, instance_id="task") == {}
 
-    def test_sandbox_provider_config_dump_strips_api_key(self) -> None:
+    @pytest.mark.parametrize(
+        ("provider_name", "api_key_env"),
+        [
+            ("daytona", DAYTONA_API_KEY_ENV),
+            ("opensandbox", OPENSANDBOX_API_KEY_ENV),
+        ],
+    )
+    def test_sandbox_provider_config_dump_strips_api_key(
+        self,
+        provider_name: str,
+        api_key_env: str,
+    ) -> None:
         provider = {
-            "opensandbox": {
+            provider_name: {
                 "connection": {
-                    "domain": "sandbox.example",
                     "api_key": "fixture-value",  # pragma: allowlist secret
                 }
             }
         }
 
         provider_for_disk = _sandbox_provider_for_config_dump(provider)
-        assert "api_key" not in provider_for_disk["opensandbox"]["connection"]
-        assert provider["opensandbox"]["connection"]["api_key"] == "fixture-value"  # pragma: allowlist secret
+        assert "api_key" not in provider_for_disk[provider_name]["connection"]
+        assert provider[provider_name]["connection"]["api_key"] == "fixture-value"  # pragma: allowlist secret
         assert _sandbox_runtime_env(provider)["env_vars"] == {
-            OPENSANDBOX_API_KEY_ENV: "fixture-value"  # pragma: allowlist secret
+            api_key_env: "fixture-value"  # pragma: allowlist secret
         }
 
     def test_split_trajectory_and_resolution_helpers_cover_edge_cases(self) -> None:
@@ -458,7 +469,20 @@ class TestApp:
         monkeypatch.setattr(mini_swe_app_module, "_run_mini_swe_v2", lambda **_params: {"task-1": "bad"})
         assert run_mini_swe_with_sandbox(env="sandbox", instance_id="task-1") == {"task-1": "bad"}
 
-    def test_run_mini_swe_v2_success_and_golden_paths(self, monkeypatch, tmp_path) -> None:
+    @pytest.mark.parametrize(
+        ("provider_name", "api_key_env"),
+        [
+            ("daytona", DAYTONA_API_KEY_ENV),
+            ("opensandbox", OPENSANDBOX_API_KEY_ENV),
+        ],
+    )
+    def test_run_mini_swe_v2_success_and_golden_paths(
+        self,
+        monkeypatch,
+        tmp_path,
+        provider_name: str,
+        api_key_env: str,
+    ) -> None:
         holder: dict[str, Any] = {}
 
         class FakeLogger:
@@ -583,7 +607,7 @@ class TestApp:
             yaml.safe_dump(
                 {
                     "model": {"model_kwargs": {"max_output_tokens": 99}},
-                    "environment": {"provider": {"opensandbox": {"connection": {}}}},
+                    "environment": {"provider": {provider_name: {"connection": {}}}},
                     "agent": {"step_limit": 1, "collapse_limit": 3},
                 }
             ),
@@ -592,7 +616,7 @@ class TestApp:
         monkeypatch.setattr(mini_swe_app_module, "get_config_path", lambda _config: config_path)
         monkeypatch.setattr(mini_swe_app_module, "uuid4", lambda: "uuid")
         monkeypatch.setattr(mini_swe_app_module.time, "time", lambda: 1234)
-        monkeypatch.setenv(OPENSANDBOX_API_KEY_ENV, "worker-value")  # pragma: allowlist secret
+        monkeypatch.setenv(api_key_env, "worker-value")  # pragma: allowlist secret
 
         params = {
             "instance_dict": {
@@ -619,9 +643,8 @@ class TestApp:
         env = holder["env"]
         assert env.cleaned is True
         assert env.config["environment_class"].endswith("MiniSWESandboxEnvironment")
-        assert (
-            env.config["provider"]["opensandbox"]["connection"]["api_key"]
-            == "worker-value"  # pragma: allowlist secret
+        assert env.config["provider"][provider_name]["connection"]["api_key"] == (
+            "worker-value"  # pragma: allowlist secret
         )
         assert env.config["image"] == "docker.io/swebench/sweb.eval.x86_64.django_1776_django-123:latest"
         assert holder["model_config"]["model_class"] == "litellm"
@@ -793,6 +816,13 @@ class TestApp:
             "chat_template_kwargs": {"enable_thinking": True},
         }
 
+    @pytest.mark.parametrize(
+        ("provider_name", "api_key_env"),
+        [
+            ("daytona", DAYTONA_API_KEY_ENV),
+            ("opensandbox", OPENSANDBOX_API_KEY_ENV),
+        ],
+    )
     @patch("responses_api_agents.mini_swe_agent_2.app.ServerClient.load_from_global_config")
     @patch("responses_api_agents.mini_swe_agent_2.app.get_first_server_config_dict")
     @patch("responses_api_agents.mini_swe_agent_2.app.get_config_path")
@@ -807,6 +837,8 @@ class TestApp:
         mock_load_from_global_config,
         tmp_path,
         monkeypatch,
+        provider_name: str,
+        api_key_env: str,
     ) -> None:
         monkeypatch.chdir(tmp_path)
         config = create_test_config()
@@ -818,10 +850,9 @@ class TestApp:
         mock_server_client_instance.global_config_dict = {
             "policy_model_name": "test_model",
             "sandbox": {
-                "default_metadata": {"sandbox-api": "opensandbox-sdk"},
-                "opensandbox": {
+                "default_metadata": {"sandbox-api": f"{provider_name}-sdk"},
+                provider_name: {
                     "connection": {
-                        "domain": "sandbox.example",
                         "api_key": "fixture-value",  # pragma: allowlist secret
                     }
                 },
@@ -835,15 +866,14 @@ class TestApp:
         await server.run(create_run_request())
 
         runtime_env = mock_runner_ray_remote.options.call_args.kwargs["runtime_env"]
-        assert runtime_env["env_vars"] == {OPENSANDBOX_API_KEY_ENV: "fixture-value"}  # pragma: allowlist secret
+        assert runtime_env["env_vars"] == {api_key_env: "fixture-value"}  # pragma: allowlist secret
         call_args = mock_runner_ray_remote.options.return_value.remote.call_args
         params = call_args.args[1]
         generated_config = yaml.safe_load(Path(params["config"]).read_text())
-        provider = generated_config["environment"]["provider"]["opensandbox"]
-        assert provider["connection"]["domain"] == "sandbox.example"
+        provider = generated_config["environment"]["provider"][provider_name]
         assert "api_key" not in provider["connection"]
         # Provider default_metadata flows into the sandbox spec metadata.
-        assert generated_config["environment"]["spec"]["metadata"]["sandbox-api"] == "opensandbox-sdk"
+        assert generated_config["environment"]["spec"]["metadata"]["sandbox-api"] == f"{provider_name}-sdk"
 
     @patch("responses_api_agents.mini_swe_agent_2.app.ServerClient.load_from_global_config")
     @patch("responses_api_agents.mini_swe_agent_2.app.get_first_server_config_dict")

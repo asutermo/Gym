@@ -59,9 +59,11 @@ RETRYABLE_ERROR_MARKERS = (
 STATUS_CODE_RE = re.compile(r"(?:status code|http)\D+(\d{3})", re.IGNORECASE)
 DAYTONA_EXTENSION_PREFIX = "daytona."
 PROVIDER_OPTION_EXTENSIONS = "extensions"
+PROVIDER_OPTION_PLATFORM = "platform"
 PROVIDER_OPTION_SNAPSHOT_ID = "snapshot_id"
 PROVIDER_OPTION_VOLUMES = "volumes"
 SANDBOX_ID_LABEL = "sandbox_id"
+SUPPORTED_PLATFORM = {"os": "linux", "arch": "amd64"}
 
 
 class DaytonaCreateError(SandboxCreateError):
@@ -340,6 +342,7 @@ class DaytonaProviderOptions:
     """Recognized per-sandbox create options read from ``SandboxSpec.provider_options``."""
 
     extensions: Mapping[str, str] = field(default_factory=dict)
+    platform: Mapping[str, str] = field(default_factory=dict)
     snapshot_id: str | None = None
     volumes: tuple[Mapping[str, Any], ...] = ()
 
@@ -361,6 +364,14 @@ class DaytonaProviderOptions:
         extensions = options.get(PROVIDER_OPTION_EXTENSIONS, {})
         if not isinstance(extensions, Mapping):
             raise TypeError("Daytona provider option 'extensions' must be a mapping")
+        platform = options.get(PROVIDER_OPTION_PLATFORM, {})
+        if not isinstance(platform, Mapping):
+            raise TypeError("Daytona provider option 'platform' must be a mapping")
+        normalized_platform = _string_map(dict(platform))
+        if normalized_platform and normalized_platform != SUPPORTED_PLATFORM:
+            raise ValueError(
+                f"Daytona provider option 'platform' supports only {SUPPORTED_PLATFORM!r}; got {normalized_platform!r}"
+            )
         snapshot_id = options.get(PROVIDER_OPTION_SNAPSHOT_ID)
         if snapshot_id is not None and not isinstance(snapshot_id, str):
             raise TypeError("Daytona provider option 'snapshot_id' must be a string")
@@ -372,6 +383,7 @@ class DaytonaProviderOptions:
 
         return cls(
             extensions=_string_map(dict(extensions)),
+            platform=normalized_platform,
             snapshot_id=snapshot_id,
             volumes=tuple(dict(volume) for volume in volumes),
         )

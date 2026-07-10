@@ -23,7 +23,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from omegaconf import OmegaConf
 
+from nemo_gym.sandbox.providers import list_providers
 from nemo_gym.sandbox.providers.base import SandboxHandle, SandboxSpec, SandboxStatus
 from nemo_gym.sandbox.providers.daytona import provider as daytona_provider
 
@@ -258,8 +260,15 @@ def test_conversion_helpers_and_config_validation(fake_daytona_sdk: None) -> Non
         daytona_provider.DaytonaProviderOptions.from_mapping({"snapshot_id": 123})
     with pytest.raises(TypeError, match="provider_options"):
         daytona_provider.DaytonaProviderOptions.from_mapping([])
-    with pytest.raises(ValueError, match="Unknown Daytona provider option.*platform"):
+    assert daytona_provider.DaytonaProviderOptions.from_mapping(
+        {"platform": {"os": "linux", "arch": "amd64"}}
+    ).platform == {"os": "linux", "arch": "amd64"}
+    with pytest.raises(TypeError, match="platform"):
+        daytona_provider.DaytonaProviderOptions.from_mapping({"platform": "linux/amd64"})
+    with pytest.raises(ValueError, match="supports only"):
         daytona_provider.DaytonaProviderOptions.from_mapping({"platform": {"os": "linux"}})
+    with pytest.raises(ValueError, match="supports only"):
+        daytona_provider.DaytonaProviderOptions.from_mapping({"platform": {"os": "linux", "arch": "arm64"}})
 
     assert daytona_provider._to_resources({}) is None
     assert daytona_provider._to_resources({"gpu": "1"}).kwargs == {"gpu": 1}
@@ -296,6 +305,33 @@ def test_conversion_helpers_and_config_validation(fake_daytona_sdk: None) -> Non
 
     with pytest.raises(ValueError, match="Unsupported Daytona DaytonaConnectionConfig settings: typo"):
         daytona_provider.DaytonaProvider(connection={"typo": True})
+
+
+def test_canonical_mini_swe_config_composes_with_daytona() -> None:
+    root = Path(__file__).resolve().parents[2]
+    agent_path = root / "responses_api_agents/mini_swe_agent_2/configs/mini_swe_agent_2.yaml"
+    provider_path = root / "nemo_gym/sandbox/providers/daytona/configs/daytona.yaml"
+    config = OmegaConf.merge(OmegaConf.load(agent_path), OmegaConf.load(provider_path))
+
+    agent = config.mini_swe_agent_2.responses_api_agents.mini_swe_agent_2
+    assert agent.sandbox_provider == "sandbox"
+    assert agent.sandbox_spec.ttl_s == 18000
+    assert agent.sandbox_spec.resources.disk_gib == 30
+    platform = OmegaConf.to_container(agent.sandbox_spec.provider_options.platform)
+    assert platform == {"os": "linux", "arch": "amd64"}
+    daytona_provider.DaytonaProviderOptions.from_mapping({"platform": platform})
+    assert agent.sandbox_spec.metadata == {
+        "benchmark": "swebench-verified",
+        "harness": "mini-swe-agent",
+    }
+    assert config.sandbox.default_metadata == {"sandbox-api": "daytona-sdk"}
+    assert set(list_providers()) >= {
+        "apptainer",
+        "daytona",
+        "docker",
+        "ecs_fargate",
+        "opensandbox",
+    }
 
 
 def test_snapshot_creation_rejects_ignored_resources(fake_daytona_sdk: None) -> None:
